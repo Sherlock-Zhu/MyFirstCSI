@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
@@ -14,7 +16,36 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	fmt.Printf("NodeStageVolumeRequest parameters: \n%v", req)
 	jsonD, _ := json.Marshal(req)
 	fmt.Println(string(jsonD))
+	// If the access type is block, do nothing for stage
+	switch req.GetVolumeCapability().GetAccessType().(type) {
+	case *csi.VolumeCapability_Block:
+		return &csi.NodeStageVolumeResponse{}, nil
+	}
+
+	LUN := ""
+	if val, ok := req.PublishContext["LUN"]; !ok {
+		return nil, status.Error(codes.InvalidArgument, "cannot get LUN information ")
+	} else {
+		LUN = val
+	}
+
+	mnt := req.VolumeCapability.GetMount()
+	fsType := "ext4"
+	if mnt.FsType != "" {
+		fsType = mnt.FsType
+	}
+
+	source := fmt.Sprintf("/dev/disk/azure/scsi1/lun%s", LUN)
+	target := req.StagingTargetPath
+
+	err := DiskFormat(source, fsType)
+
 	return nil, nil
+}
+
+func DiskFormat(disk string, fsType string) error {
+
+	return nil
 }
 
 func (d *Driver) NodeUnstageVolume(context.Context, *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
