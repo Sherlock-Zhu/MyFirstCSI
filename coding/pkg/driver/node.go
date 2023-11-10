@@ -55,6 +55,8 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 		fmt.Printf("unable to mount disk to target path with error: %s\n", err.Error())
 		return nil, status.Error(codes.Internal, fmt.Sprintf("unable to mount disk to target path with error: %s\n", err.Error()))
 	}
+
+	fmt.Println("\n###\n###\n!!!NodeStageVolume request completed successfully\n###\n###")
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 
@@ -65,9 +67,15 @@ func DiskFormat(disk string, fsType string) error {
 	fmt.Printf("start checking if disk is formatted with command blkid and arg[-p -s TYPE -s PTTYPE -o export %s]", disk)
 	out, err := exec.Command(CheckCmd, CheckArgs...).CombinedOutput()
 	if err == nil {
+		// #bug: didn't check if format type is same with volume required one here
 		fmt.Printf("disk already formatted. Blkid command output: \n%s", out)
 		return nil
+	} else if strings.Contains(err.Error(), "exit status 2") {
+		fmt.Println("disk didn't format yet")
+	} else {
+		return fmt.Errorf("error: %s, format disk with error\n", err.Error())
 	}
+
 	//start format disk
 	FormatCmd := "mkfs"
 	FormatArgs := []string{"-t", fsType, "-F", "-m0", disk}
@@ -75,39 +83,87 @@ func DiskFormat(disk string, fsType string) error {
 	out, err = exec.Command(FormatCmd, FormatArgs...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("format disk failed. mkfs output: %s, and err: %s\n", out, err.Error())
+	} else {
+		fmt.Printf("format completed, output as below: \n%s", out)
 	}
-	return nil
+
+	// double confirm disk formatted successfully
+	fmt.Printf("start checking if disk is formatted with command blkid and arg[-p -s TYPE -s PTTYPE -o export %s]", disk)
+	out, err = exec.Command(CheckCmd, CheckArgs...).CombinedOutput()
+	if err == nil {
+		fmt.Printf("disk finally formatted. Blkid command output: \n%s", out)
+		return nil
+	} else if strings.Contains(err.Error(), "exit status 2") {
+		fmt.Println("disk cannot be formatted")
+		return fmt.Errorf("disk cannot be formatted and err: %s\n", err.Error())
+	} else {
+		return fmt.Errorf("error: %s, format disk with error\n", err.Error())
+	}
 }
 
 func DiskMount(disk string, path string, option []string) error {
-	//Mount disk
+	//create target folder
 	MountCmd := "mount"
-	MountArgs := []string{}
-	MountArgs = append(MountArgs, disk, path)
+	MountArgs := append(option, disk, path)
+	fmt.Printf("start making dir %s\n", path)
 	err := os.MkdirAll(path, 0777)
 	if err != nil {
 		return fmt.Errorf("error: %s, creating the target dir\n", err.Error())
 	}
-	fmt.Printf("start mounting disk with command mount and arg[%s %s %s]\n", strings.Join(option, " "), disk, path)
+	// check if target dir created
+	_, err = os.Stat(path)
+	if os.IsNotExist(err) {
+		fmt.Println("target dir doesn't exists")
+		return fmt.Errorf("error: %s, creating the target dir\n", err.Error())
+	} else if err == nil {
+		fmt.Println("target dir exists, continue")
+	} else {
+		fmt.Println("error occurred during target dir checking:", err)
+		return fmt.Errorf("error: %s, creating the target dir\n", err.Error())
+	}
+
+	// mount disk
+	fmt.Printf("start mounting disk with command mount and arg[%s]\n", strings.Join(MountArgs, " "))
 	out, err := exec.Command(MountCmd, MountArgs...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("mount disk error. mount command output: %s, and error: %s\n", out, err.Error())
+	} else {
+		fmt.Printf("mount successfully: %s\n", out)
 	}
 	return nil
 }
 
-func (d *Driver) NodeUnstageVolume(context.Context, *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
+func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolumeRequest) (*csi.NodeUnstageVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!NodeUnstageVolume is called\n###\n###")
-	return nil, nil
+	fmt.Printf("NodeUnstageVolume parameters: \n%v", req)
+	jsonD, _ := json.Marshal(req)
+	fmt.Println(string(jsonD))
+	fmt.Println("\n###\n###\n!!!NodeUnstageVolume request check done\n###\n###")
+
+	UmVolumeId := req.GetVolumeId()
+	Umpath := req.StagingTargetPath
+	err := DiskUMount(UmVolumeId, Umpath)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("Error %s, mounting the volume from staging dir to target dir", err.Error()))
+	}
+
+	err = DiskRmPath(UmVolumeId, Umpath)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("Error %s, mounting the volume from staging dir to target dir", err.Error()))
+	}
+
+	fmt.Println("\n###\n###\n!!!NodeUnstageVolume request completed successfully\n###\n###")
+
+	return &csi.NodeUnstageVolumeResponse{}, nil
 }
+
 func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolumeRequest) (*csi.NodePublishVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!NodePublishVolume is called\n###\n###")
 	fmt.Printf("NodePublishVolume parameters: \n%v", req)
 	jsonD, _ := json.Marshal(req)
 	fmt.Println(string(jsonD))
+	fmt.Println("\n###\n###\n!!!NodePublishVolume request check done\n###\n###")
 
-	// get req.VolumeCaps and make sure that you handle request for block mode as well
-	// here we are just handling request for filesystem mode
 	// in case of block mode, the source is going to be the device dir where volume was attached form ControllerPubVolume RPC
 
 	fsType := "ext4"
@@ -130,12 +186,68 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		return nil, status.Error(codes.Internal, fmt.Sprintf("Error %s, mounting the volume from staging dir to target dir", err.Error()))
 	}
 
+	fmt.Println("\n###\n###\n!!!NodePublishVolume request completed successfully\n###\n###")
 	return &csi.NodePublishVolumeResponse{}, nil
 }
-func (d *Driver) NodeUnpublishVolume(context.Context, *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
+
+func (d *Driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublishVolumeRequest) (*csi.NodeUnpublishVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!NodeUnpublishVolume is called\n###\n###")
-	return nil, nil
+	fmt.Printf("NodeUnpublishVolume parameters: \n%v", req)
+	jsonD, _ := json.Marshal(req)
+	fmt.Println(string(jsonD))
+	fmt.Println("\n###\n###\n!!!NodeUnpublishVolume request check done\n###\n###")
+	UmVolumeId := req.GetVolumeId()
+	Umpath := req.TargetPath
+	err := DiskUMount(UmVolumeId, Umpath)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("Error %s, mounting the volume from staging dir to target dir", err.Error()))
+	}
+
+	err = DiskRmPath(UmVolumeId, Umpath)
+	if err != nil {
+		return nil, status.Error(codes.Internal, fmt.Sprintf("Error %s, mounting the volume from staging dir to target dir", err.Error()))
+	}
+
+	fmt.Println("\n###\n###\n!!!NodeUnpublishVolume request completed successfully\n###\n###")
+	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
+
+func DiskUMount(volume string, path string) error {
+	//create target folder
+	UMountCmd := "umount"
+	fmt.Printf("umounting volume %s in path %s\n", volume, path)
+	out, err := exec.Command(UMountCmd, path).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("umount disk error. mount command output: %s, and error: %s\n", out, err.Error())
+	} else {
+		fmt.Printf("umount successfully: %s\n", out)
+	}
+	return nil
+}
+
+func DiskRmPath(volume string, path string) error {
+	//create target folder
+	RmCmd := "rm"
+	RmArgs := []string{"-rf", path}
+	if len(path) == 0 {
+		fmt.Println("given path is empty")
+		return fmt.Errorf("given path is empty\n")
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("the target path %s doesn't exists\n", path)
+		return fmt.Errorf("the target path %s doesn't exists\n", path)
+	}
+
+	fmt.Printf("remove volume %s path %s\n", volume, path)
+	out, err := exec.Command(RmCmd, RmArgs...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("remove mount path error, rm command output: %s, and error: %s\n", out, err.Error())
+	} else {
+		fmt.Printf("remove mount path successfully: %s\n", out)
+	}
+	return nil
+}
+
 func (d *Driver) NodeGetVolumeStats(context.Context, *csi.NodeGetVolumeStatsRequest) (*csi.NodeGetVolumeStatsResponse, error) {
 	fmt.Println("\n###\n###\n!!!NodeGetVolumeStats is called\n###\n###")
 	return nil, nil

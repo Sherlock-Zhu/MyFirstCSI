@@ -109,12 +109,18 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		},
 	}, nil
 }
+
 func (d *Driver) DeleteVolume(context.Context, *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!DeleteVolume is called\n###\n###")
 	return nil, nil
 }
+
 func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!Publishvolume is called\n###\n###")
+	fmt.Printf("ControllerPublishVolume parameters: \n%v", req)
+	jsonD, _ := json.Marshal(req)
+	fmt.Println(string(jsonD))
+	fmt.Println("\n###\n###\n!!!ControllerPublishVolume request check done\n###\n###")
 	diskURI := req.GetVolumeId()
 	fmt.Printf("volumeId: %s", diskURI)
 	disk, err := d.checkDiskExists(ctx, diskURI)
@@ -217,8 +223,30 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		PublishContext: pubContext,
 	}, nil
 }
-func (d *Driver) ControllerUnpublishVolume(context.Context, *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
+func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!ControllerUnpublishVolume is called\n###\n###")
+	fmt.Printf("NodePublishVolume parameters: \n%v\n", req)
+	jsonD, _ := json.Marshal(req)
+	fmt.Println(string(jsonD))
+	fmt.Println("\n###\n###\n!!!ControllerUnpublishVolume request check done\n###\n###")
+
+	diskURI := req.GetVolumeId()
+	nodeID := req.GetNodeId()
+	nodeName := types.NodeName(nodeID)
+	diskName, err := azureutils.GetDiskName(diskURI)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, err.Error())
+	}
+
+	fmt.Printf("start detaching disk %s\n", diskURI)
+	if err := d.cloud.DetachDisk(ctx, diskName, diskURI, nodeName); err != nil {
+		if strings.Contains(err.Error(), consts.ErrDiskNotFound) {
+			fmt.Printf("disk %s is not attached to the node %s\n", diskURI, nodeName)
+		} else {
+			return nil, status.Errorf(codes.Internal, "Could not detach volume %s from node %s: %v", diskURI, nodeID, err)
+		}
+	}
+
 	return nil, nil
 }
 func (d *Driver) ValidateVolumeCapabilities(context.Context, *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
