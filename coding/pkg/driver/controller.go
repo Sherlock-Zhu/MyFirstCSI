@@ -110,9 +110,23 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	}, nil
 }
 
-func (d *Driver) DeleteVolume(context.Context, *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
+func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!DeleteVolume is called\n###\n###")
-	return nil, nil
+	fmt.Printf("DeleteVolume parameters: \n%v", req)
+	jsonD, _ := json.Marshal(req)
+	fmt.Println(string(jsonD))
+	fmt.Println("\n###\n###\n!!!DeleteVolume request check done\n###\n###")
+
+	volumeID := req.GetVolumeId()
+	diskURI := req.GetVolumeId()
+	klog.V(2).Infof("deleting azure disk(%s)", diskURI)
+	err := d.cloud.DeleteManagedDisk(ctx, diskURI)
+	if err != nil {
+		fmt.Printf("deleting azure disk %s for volume %s failed with error: %v", diskURI, volumeID, err)
+		return nil, status.Errorf(codes.Internal, fmt.Sprintf("deleting azure disk %s for volume %s failed with error: %v", diskURI, volumeID, err))
+	}
+	fmt.Printf("deleting azure disk %s for volume %s successfully", diskURI, volumeID)
+	return &csi.DeleteVolumeResponse{}, err
 }
 
 func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.ControllerPublishVolumeRequest) (*csi.ControllerPublishVolumeResponse, error) {
@@ -223,6 +237,7 @@ func (d *Driver) ControllerPublishVolume(ctx context.Context, req *csi.Controlle
 		PublishContext: pubContext,
 	}, nil
 }
+
 func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.ControllerUnpublishVolumeRequest) (*csi.ControllerUnpublishVolumeResponse, error) {
 	fmt.Println("\n###\n###\n!!!ControllerUnpublishVolume is called\n###\n###")
 	fmt.Printf("NodePublishVolume parameters: \n%v\n", req)
@@ -246,9 +261,10 @@ func (d *Driver) ControllerUnpublishVolume(ctx context.Context, req *csi.Control
 			return nil, status.Errorf(codes.Internal, "Could not detach volume %s from node %s: %v", diskURI, nodeID, err)
 		}
 	}
-
-	return nil, nil
+	fmt.Printf("detach disk %s from node %s successfully", diskURI, nodeID)
+	return &csi.ControllerUnpublishVolumeResponse{}, nil
 }
+
 func (d *Driver) ValidateVolumeCapabilities(context.Context, *csi.ValidateVolumeCapabilitiesRequest) (*csi.ValidateVolumeCapabilitiesResponse, error) {
 	fmt.Println("\n###\n###\n!!!ValidateVolumeCapabilities is called\n###\n###")
 	return nil, nil
